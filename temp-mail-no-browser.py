@@ -1,11 +1,22 @@
-import requests
-import time
-import re
-import webbrowser
+import argparse
 import json
-from colorama import init, Fore
+import re
+import secrets
+import time
+import webbrowser
 
-init(autoreset=True)
+import requests
+
+try:
+    from colorama import Fore, init
+
+    init(autoreset=True)
+except ImportError:  # colors are optional
+    class Fore:
+        GREEN = RED = CYAN = YELLOW = LIGHTGREEN_EX = ""
+
+    def init(autoreset=True):
+        pass
 
 # Base URL for the Mail.tm API
 BASE_URL = "https://api.mail.tm"
@@ -42,32 +53,47 @@ def generate_account():
     session = requests.Session()
 
     # Get available domains
-    domains = session.get(f"{BASE_URL}/domains").json()["hydra:member"]
+    try:
+        res = session.get(f"{BASE_URL}/domains", timeout=15)
+        res.raise_for_status()
+        domains = res.json()["hydra:member"]
+    except (requests.RequestException, KeyError, IndexError) as exc:
+        print(f"{Fore.RED}[!] Could not load mail.tm domains: {exc}")
+        return None, None, None, None
+
     domain = domains[0]["domain"]
 
     # Generate a unique username based on timestamp
-    username = ''.join([str(int(time.time() * 1000))[-8:]])
+    username = str(int(time.time() * 1000))[-8:]
     address = f"{username}@{domain}"
-    password = "Masoud@123"
+    password = secrets.token_urlsafe(12)
 
     payload = {"address": address, "password": password}
-    res = session.post(f"{BASE_URL}/accounts", json=payload)
+    try:
+        res = session.post(f"{BASE_URL}/accounts", json=payload, timeout=15)
+    except requests.RequestException as exc:
+        print(f"{Fore.RED}[!] Error creating email: {exc}")
+        return None, None, None, None
 
     if res.status_code == 201:
         print(f"{Fore.GREEN}[+] Email created: {address}")
     else:
         print(f"{Fore.RED}[!] Error creating email: {res.text}")
-        return None, None, None
+        return None, None, None, None
 
     # Get authentication token
-    res = session.post(f"{BASE_URL}/token", json=payload)
+    try:
+        res = session.post(f"{BASE_URL}/token", json=payload, timeout=15)
+    except requests.RequestException as exc:
+        print(f"{Fore.RED}[!] Error getting token: {exc}")
+        return None, None, None, None
     if res.status_code == 200:
         token = res.json()["token"]
         session.headers.update({"Authorization": f"Bearer {token}"})
-        return session, address, token
+        return session, address, password, token
     else:
         print(f"{Fore.RED}[!] Error getting token: {res.text}")
-        return None, None, None
+        return None, None, None, None
 
 def strip_html(text):
     """
@@ -131,23 +157,22 @@ def save_account_info(email, password, token):
         "token": token,
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
     }
-    
-    with open("account_info.json", "w") as f:
+
+    with open("account_info.json", "w", encoding="utf-8") as f:
         json.dump(account_info, f, indent=4)
-    
+
     print(f"{Fore.GREEN}[+] Account information saved to account_info.json")
 
-def open_mail_website(email):
+def open_mail_website(email, password):
     """
     Open the mail.tm website in the default browser
     """
-    # mail.tm web interface URL
     url = "https://mail.tm/en/"
-    
+
     print(f"{Fore.CYAN}[*] Opening {url} in your browser")
     print(f"{Fore.CYAN}[*] Use the email: {email}")
-    print(f"{Fore.CYAN}[*] Password: Masoud@123")
-    
+    print(f"{Fore.CYAN}[*] Password: {password}")
+
     webbrowser.open(url)
 
 def check_messages(session, email, wait_time=60, interval=5):
@@ -160,7 +185,7 @@ def check_messages(session, email, wait_time=60, interval=5):
     seen = set()
 
     while time.time() < end_time:
-        res = session.get(f"{BASE_URL}/messages")
+        res = session.get(f"{BASE_URL}/messages", timeout=15)
         if res.status_code == 200:
             messages = res.json()["hydra:member"]
             for msg in messages:
@@ -172,7 +197,7 @@ def check_messages(session, email, wait_time=60, interval=5):
                     msg_id = msg["id"]
 
                     # Get full message content
-                    full_msg = session.get(f"{BASE_URL}/messages/{msg_id}").json()
+                    full_msg = session.get(f"{BASE_URL}/messages/{msg_id}", timeout=15).json()
                     text = full_msg.get("text", "") or full_msg.get("html", "")
                     if isinstance(text, list):
                         text = "\n".join(text)
@@ -195,26 +220,37 @@ def check_messages(session, email, wait_time=60, interval=5):
 
     print(f"\n{Fore.GREEN}✅ Email checking complete.")
 
+def main():
+    parser = argparse.ArgumentParser(
+        description="Create a mail.tm inbox and extract verification codes."
+    )
+    parser.add_argument("--wait", type=int, default=60,
+                        help="Seconds to watch for new mail (default: 60)")
+    parser.add_argument("--interval", type=int, default=5,
+                        help="Seconds between inbox checks (default: 5)")
+    parser.add_argument("--open", action="store_true",
+                        help="Open the mail.tm website after creating the inbox")
+    args = parser.parse_args()
+
+    banner()
+    session, email, password, token = generate_account()
+
+    if not session:
+        return 1
+
+    save_account_info(email, password, token)
+
+    if args.open:
+        open_mail_website(email, password)
+
+    check_messages(session, email, wait_time=args.wait, interval=args.interval)
+
+    if input(f"{Fore.YELLOW}Did you find the verification code manually? (Y/N): ").strip().upper() == "Y":
+        code = input(f"{Fore.YELLOW}Enter the verification code: ").strip()
+        save_code(code, email)
+
+    return 0
+
+
 if __name__ == "__main__":
-    banner()  # نمایش بنر
-    session, email, token = generate_account()
-    # ادامه کد...
-    session, email, token = generate_account()
-    if session:
-        # Save account information
-        save_account_info(email, "Masoud@123", token)
-        
-        # Ask user if they want to open the website
-        open_website = input(f"{Fore.YELLOW}Do you want to open the mail.tm website? (Y/N): ").strip()
-        if open_website.upper() == "Y":
-            open_mail_website(email)
-        
-        # Check messages in the background
-        check_messages(session, email, wait_time=60, interval=5)
-        
-        # Ask if user wants to manually input the code
-        user_input = input(f"{Fore.YELLOW}Did you find the verification code manually? (Y/N): ").strip()
-        if user_input.upper() == "Y":
-            code = input(f"{Fore.YELLOW}Enter the verification code: ").strip()
-            save_code(code, email)
-            print(f"{Fore.GREEN}[✓] Code {code} saved to codes.txt")
+    raise SystemExit(main())
