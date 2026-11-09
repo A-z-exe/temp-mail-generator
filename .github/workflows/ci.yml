@@ -7,11 +7,14 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
       - run: pip install -r requirements.txt
       - run: python -m py_compile temp-mail-no-browser.py
       - run: python temp-mail-no-browser.py --help
